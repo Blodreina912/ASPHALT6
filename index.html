@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Asphalt 2D: Web Edition</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #050508;
+    color: #fff;
+    font-family: sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    overflow: hidden;
+  }
+  #game-box {
+    position: relative;
+    width: 360px;
+    height: 600px;
+    box-shadow: 0 0 40px rgba(0, 150, 255, 0.4);
+    border: 2px solid #222;
+    border-radius: 10px;
+    overflow: hidden;
+    background: #000;
+  }
+  canvas { width: 100%; height: 100%; display: block; }
+  #controls {
+    position: absolute;
+    bottom: 15px;
+    left: 0; right: 0;
+    display: flex;
+    justify-content: space-between;
+    padding: 0 20px;
+    pointer-events: none;
+  }
+  .btn-cluster { display: flex; gap: 10px; pointer-events: auto; }
+  .btn {
+    width: 58px; height: 58px;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.15);
+    border: 2px solid rgba(255,255,255,0.3);
+    color: #fff; font-size: 22px; font-weight: bold;
+    display: flex; align-items: center; justify-content: center;
+    user-select: none; backdrop-filter: blur(4px);
+  }
+  .btn:active { background: rgba(0,229,255,0.6); }
+  .nitro-btn {
+    width: 68px; height: 68px;
+    background: rgba(255, 0, 85, 0.3);
+    border-color: rgba(255, 0, 85, 0.7);
+  }
+  .nitro-btn:active { background: rgba(255, 0, 85, 0.9); }
+</style>
+</head>
+<body>
+
+<div id="game-box">
+  <canvas id="cv" width="360" height="600"></canvas>
+  <div id="controls">
+    <div class="btn-cluster">
+      <div class="btn" id="l-btn">&#9664;</div>
+      <div class="btn" id="r-btn">&#9654;</div>
+    </div>
+    <div class="btn-cluster">
+      <div class="btn" id="b-btn">&#9660;</div>
+      <div class="btn nitro-btn" id="n-btn">&#9889;</div>
+    </div>
+  </div>
+</div>
+
+<script>
+const c = document.getElementById('cv');
+const ctx = c.getContext('2d');
+const W = 360, H = 600, ROAD_W = 1200, SEG_L = 200, DRAW_D = 140;
+
+let speed = 0, maxSpeed = 7200, nitroMax = 11500;
+let playerX = 0, pos = 0, nitro = 100, isNitro = false, score = 0;
+const keys = { l: false, r: false, down: false, n: false };
+
+window.addEventListener('keydown', e => {
+  if (e.key === 'ArrowLeft' || e.key === 'a') keys.l = true;
+  if (e.key === 'ArrowRight' || e.key === 'd') keys.r = true;
+  if (e.key === 'ArrowDown' || e.key === 's') keys.down = true;
+  if (e.key === ' ' || e.key === 'Shift') keys.n = true;
+});
+window.addEventListener('keyup', e => {
+  if (e.key === 'ArrowLeft' || e.key === 'a') keys.l = false;
+  if (e.key === 'ArrowRight' || e.key === 'd') keys.r = false;
+  if (e.key === 'ArrowDown' || e.key === 's') keys.down = false;
+  if (e.key === ' ' || e.key === 'Shift') keys.n = false;
+});
+
+const bind = (id, k) => {
+  const el = document.getElementById(id);
+  el.addEventListener('touchstart', e => { e.preventDefault(); keys[k] = true; });
+  el.addEventListener('touchend', e => { e.preventDefault(); keys[k] = false; });
+  el.addEventListener('mousedown', () => keys[k] = true);
+  el.addEventListener('mouseup', () => keys[k] = false);
+};
+bind('l-btn', 'l'); bind('r-btn', 'r'); bind('b-btn', 'down'); bind('n-btn', 'n');
+
+const segs = [];
+for (let i = 0; i < 800; i++) {
+  const curve = (i > 80 && i < 220) ? 2.5 : (i > 350 && i < 500) ? -3 : 0;
+  segs.push({
+    p1: { w: { z: i * SEG_L }, s: {} },
+    p2: { w: { z: (i + 1) * SEG_L }, s: {} },
+    curve, cars: []
+  });
+  if (i > 40 && i % 20 === 0) {
+    segs[i].cars.push({
+      offset: (Math.random() * 1.4) - 0.7,
+      z: i * SEG_L,
+      speed: 2400 + Math.random() * 2000,
+      color: ['#00e5ff', '#ffb703', '#ffffff'][Math.floor(Math.random() * 3)]
+    });
+  }
+}
+
+function project(p, cx, cy, cz) {
+  const tz = p.w.z - cz;
+  p.s.scale = 0.85 / tz;
+  p.s.x = Math.round((W / 2) + (p.s.scale * (p.w.x - cx) * W / 2));
+  p.s.y = Math.round((H / 2) - (p.s.scale * (p.w.y - cy) * H / 2));
+  p.s.w = Math.round(p.s.scale * ROAD_W * W / 2);
+}
+
+function poly(x1, y1, x2, y2, x3, y3, x4, y4, col) {
+  ctx.fillStyle = col;
+  ctx.beginPath();
+  ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.lineTo(x3, y3); ctx.lineTo(x4, y4);
+  ctx.closePath(); ctx.fill();
+}
+
+function update(dt) {
+  isNitro = keys.n && nitro > 0;
+  nitro = isNitro ? Math.max(0, nitro - dt * 30) : Math.min(100, nitro + dt * 7);
+
+  const curMax = isNitro ? nitroMax : maxSpeed;
+  speed += keys.down ? -40 : 35;
+  if (Math.abs(playerX) > 1.0) speed -= 80;
+  speed = Math.max(0, Math.min(speed, curMax));
+
+  pos += speed * dt;
+  const trackLen = segs.length * SEG_L;
+  while (pos >= trackLen) pos -= trackLen;
+
+  const curSeg = segs[Math.floor(pos / SEG_L) % segs.length];
+  const steer = (speed / maxSpeed) * 1.8 * dt;
+  if (keys.l) playerX -= steer;
+  if (keys.r) playerX += steer;
+  playerX -= (steer * curSeg.curve * 0.4);
+
+  for (const s of segs) {
+    for (const car of s.cars) {
+      car.z = (car.z + car.speed * dt) % trackLen;
+      if (Math.abs(car.z - pos) < 180 && Math.abs(playerX - car.offset) < 0.22) {
+        speed = 800;
+        nitro = Math.max(0, nitro - 20);
+      }
+    }
+  }
+  score += Math.floor(speed * dt * 0.05);
+}
+
+function render() {
+  ctx.fillStyle = '#0a001a';
+  ctx.fillRect(0, 0, W, H / 2);
+
+  const base = Math.floor(pos / SEG_L);
+  let maxy = H, coff = 0;
+
+  for (let n = 0; n < DRAW_D; n++) {
+    const s = segs[(base + n) % segs.length];
+    s.p1.w.x = coff; s.p1.w.y = 0; s.p1.w.z = (base + n) * SEG_L;
+    s.p2.w.x = coff + s.curve; s.p2.w.y = 0; s.p2.w.z = (base + n + 1) * SEG_L;
+    coff += s.curve;
+
+    project(s.p1, playerX * (ROAD_W / 2), 1000, pos);
+    project(s.p2, playerX * (ROAD_W / 2), 1000, pos);
+
+    if (s.p1.s.y >= maxy || s.p2.s.y >= s.p1.s.y) continue;
+
+    const alt = Math.floor((base + n) / 3) % 2 === 0;
+    ctx.fillStyle = alt ? '#0f051d' : '#080112';
+    ctx.fillRect(0, s.p2.s.y, W, s.p1.s.y - s.p2.s.y);
+
+    const r1 = s.p1.s.w * 1.15, r2 = s.p2.s.w * 1.15;
+    poly(s.p1.s.x - r1, s.p1.s.y, s.p1.s.x + r1, s.p1.s.y, s.p2.s.x + r2, s.p2.s.y, s.p2.s.x - r2, s.p2.s.y, isNitro ? '#00e5ff' : (alt ? '#ff0055' : '#fff'));
+    poly(s.p1.s.x - s.p1.s.w, s.p1.s.y, s.p1.s.x + s.p1.s.w, s.p1.s.y, s.p2.s.x + s.p2.s.w, s.p2.s.y, s.p2.s.x - s.p2.s.w, s.p2.s.y, alt ? '#181822' : '#14141d');
+
+    for (const car of s.cars) {
+      const sc = s.p1.s.scale;
+      const cx = s.p1.s.x + (sc * car.offset * ROAD_W * W / 4);
+      const cw = 50 * sc * 8, ch = 25 * sc * 8;
+      ctx.fillStyle = car.color;
+      ctx.fillRect(cx - cw / 2, s.p1.s.y - ch, cw, ch);
+    }
+    maxy = s.p1.s.y;
+  }
+
+  const px = W / 2, py = H - 85;
+  if (isNitro) {
+    ctx.fillStyle = '#00e5ff';
+    ctx.shadowBlur = 15; ctx.shadowColor = '#00e5ff';
+    ctx.fillRect(px - 22, py + 28, 12, 16);
+    ctx.fillRect(px + 10, py + 28, 12, 16);
+    ctx.shadowBlur = 0;
+  }
+  ctx.fillStyle = '#ff1744';
+  ctx.beginPath(); ctx.roundRect(px - 32, py, 64, 34, 6); ctx.fill();
+  ctx.fillStyle = '#111';
+  ctx.fillRect(px - 24, py + 4, 48, 18);
+
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 16px sans-serif';
+  ctx.fillText(Math.floor(speed / 36) + ' KM/H', 16, 32);
+  ctx.fillText('SCORE: ' + score, 16, 52);
+  ctx.fillStyle = 'rgba(255,255,255,0.2)'; ctx.fillRect(W - 116, 20, 100, 12);
+  ctx.fillStyle = isNitro ? '#00e5ff' : '#ff0055';
+  ctx.fillRect(W - 116, 20, (nitro / 100) * 100, 12);
+}
+
+let last = performance.now();
+function run(now) {
+  const dt = Math.min((now - last) / 1000, 0.1);
+  last = now;
+  update(dt);
+  render();
+  requestAnimationFrame(run);
+}
+requestAnimationFrame(run);
+</script>
+</body>
+</html>
